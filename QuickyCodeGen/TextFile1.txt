@@ -1,0 +1,292 @@
+﻿        private object _lock = new object();
+        private DataSet _ds;
+        private bool _autoGenSampleInput = true;
+        private bool _updateQueued = false;
+        private DateTime _updateQueueTimestamp = DateTime.MinValue;
+        private ImportForm form;
+
+
+        private void MainForm_Load(object sender, EventArgs e)
+        {
+            _presenter = new MainFormPresenter(this);
+
+            form = new ImportForm();
+            _ds = new DataSet();
+            DataTable table = _ds.Tables.Add(Guid.NewGuid().ToString("N"));
+
+            uxColumnListTextBox.Text = "FirstName\r\nLastName";
+            generateSampleColumns();
+            generateSampleData();
+            createSampleInput();
+            
+            table.RowChanged += new DataRowChangeEventHandler(table_RowChanged);
+            table.RowDeleted += new DataRowChangeEventHandler(table_RowDeleted);
+            table.TableNewRow += new DataTableNewRowEventHandler(table_TableNewRow);
+
+            if (ApplicationDeployment.IsNetworkDeployed)
+            {
+                ApplicationDeployment ad = ApplicationDeployment.CurrentDeployment;
+
+                uxVersionToolStripStatusLabel.Text = ad.CurrentVersion.ToString();
+            }
+            else
+                uxVersionToolStripStatusLabel.Text = Application.ProductVersion;
+
+            uxMainDataGridView.AutoGenerateColumns = true;
+            uxMainDataGridView.DataSource = _ds.Tables[0];
+            
+        }
+
+        void table_TableNewRow(object sender, DataTableNewRowEventArgs e)
+        {
+            queueUpdate();
+        }
+
+        void table_RowDeleted(object sender, DataRowChangeEventArgs e)
+        {
+            queueUpdate();
+        }
+
+
+        void table_RowChanged(object sender, DataRowChangeEventArgs e)
+        {
+            update();
+        }
+
+
+        private void update()
+        {
+            StringBuilder builder = new StringBuilder();
+
+            
+            //DataTable table = _ds.Tables[0];
+
+            foreach (DataGridViewRow row in uxMainDataGridView.Rows)
+            {
+                if (!row.IsNewRow)
+                {
+                    string input = uxInputTextBox.Text;
+                    foreach (DataGridViewColumn column in uxMainDataGridView.Columns)
+                    {
+                        input = input.Replace("<%=" + column.Name + "%>", row.Cells[column.Index].EditedFormattedValue.ToString());
+                    }
+
+                    builder.Append(input);
+                    builder.AppendLine();
+                }
+            }
+
+            if (uxOutputTextBox.InvokeRequired)
+                uxOutputTextBox.Invoke((MethodInvoker)delegate { uxOutputTextBox.Text = builder.ToString(); });
+            else
+                uxOutputTextBox.Text = builder.ToString(); 
+
+        }
+
+
+        private void uxInputTextBox_TextChanged(object sender, EventArgs e)
+        {
+            queueUpdate();
+
+            if (uxInputTextBox.Focused && _autoGenSampleInput)
+                _autoGenSampleInput = false;
+
+        }
+
+        private void uxUpdateColumnListLinkLabel_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
+        {
+            updateColumnList();
+
+            if (_autoGenSampleInput)
+            {
+                generateSampleData();
+                createSampleInput();
+
+            }
+
+        }
+
+        private void updateColumnList()
+        {
+            DataTable table = _ds.Tables[0];
+
+            try
+            {
+                string[] columns = uxColumnListTextBox.Text.Split(new string[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
+
+                for (int i = 0; i < columns.Length; i++)
+                {
+                    if (i >= table.Columns.Count)
+                    {
+                        table.Columns.Add(columns[i]);
+                    }
+                    else
+                    {
+                        if (table.Columns[i].ColumnName != columns[i])
+                        {
+                            foreach (DataColumn dc in table.Columns)
+                            {
+                                if (dc.ColumnName == columns[i])
+                                    dc.ColumnName = dc.ColumnName + Guid.NewGuid().ToString("N");
+                            }
+                            table.Columns[i].ColumnName = columns[i];
+                        }
+                    }
+                }
+
+                while (table.Columns.Count > columns.Length)
+                    table.Columns.RemoveAt(table.Columns.Count - 1);
+
+
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message);
+            }
+        }
+
+        private void generateSampleColumns()
+        {
+            DataTable table = _ds.Tables[0];
+
+            table.Columns.Add("FirstName");
+            table.Columns.Add("LastName");
+
+        }
+        private void generateSampleData()
+        {
+            DataTable table = _ds.Tables[0];
+            table.BeginLoadData();
+
+            table.Rows.Add("Jane", "Doe");
+            table.Rows.Add("John", "Doe");
+
+            table.EndLoadData();
+
+        }
+
+        private void createSampleInput()
+        {
+            DataTable table = _ds.Tables[0];
+
+            StringBuilder sb = new StringBuilder();
+            sb.Append("Lorem ipsum dolor es ");
+            string delimiter = "";
+            foreach (DataColumn dc in table.Columns)
+            {
+                sb.AppendFormat("{1}[<%={0}%>]", dc.ColumnName, delimiter);
+                delimiter = ", ";
+            }
+            sb.Append(".  Bla Bla Bla");
+            uxInputTextBox.Text = sb.ToString();
+        }
+
+        private void uxCheckForUpdateToolStripStatusLabel_Click(object sender, EventArgs e)
+        {
+            UpdateForm form = new UpdateForm();
+            form.StartPosition = FormStartPosition.CenterParent;
+
+            form.ShowDialog();
+        }
+
+        private void uxImportTextLinkLabel_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
+        {
+            
+            if (form.ShowDialog() == DialogResult.OK)
+            {
+                DataTable table = form.GetData().Copy();
+                table.TableName = Guid.NewGuid().ToString("N");
+
+                if (table.Columns.Count != _ds.Tables[0].Columns.Count)
+                {
+                    StringBuilder sb = new StringBuilder();
+                    foreach (DataColumn column in table.Columns)
+                    {
+                        sb.AppendLine(column.ColumnName);
+                    }
+                    uxColumnListTextBox.Text = sb.ToString();
+                }
+
+                uxMainDataGridView.DataSource = null;
+                uxMainDataGridView.DataMember = string.Empty;
+                uxMainDataGridView.DataBindings.Clear();
+                _ds.Tables.RemoveAt(0);
+
+                _ds.Tables.Add(table);
+
+                _ds.Tables[0].RowChanged += new DataRowChangeEventHandler(MainForm_RowChanged);
+                _ds.Tables[0].TableNewRow += new DataTableNewRowEventHandler(MainForm_TableNewRow);
+                _ds.Tables[0].RowDeleted += new DataRowChangeEventHandler(MainForm_RowDeleted);
+
+                uxMainDataGridView.AutoGenerateColumns = true;
+                uxMainDataGridView.DataSource = _ds.Tables[0];
+
+                updateColumnList();
+                if (_autoGenSampleInput)
+                    createSampleInput();
+
+                queueUpdate();
+            }
+
+        }
+
+        void MainForm_RowDeleted(object sender, DataRowChangeEventArgs e)
+        {
+            queueUpdate();
+        }
+
+        void MainForm_TableNewRow(object sender, DataTableNewRowEventArgs e)
+        {
+            queueUpdate();
+        }
+
+        void MainForm_RowChanged(object sender, DataRowChangeEventArgs e)
+        {
+            queueUpdate();           
+        }
+
+        private void queueUpdate()
+        {
+            lock(_lock)
+            {
+                if (!_updateQueued)
+                {
+                    _updateQueued = true;
+                    _updateQueueTimestamp = DateTime.Now;
+                }
+            }
+        }
+
+        private void uxQueuedUpdateTimer_Tick(object sender, EventArgs e)
+        {
+
+            lock (_lock)
+            {
+                if (_updateQueued)
+                {
+                    TimeSpan ts = DateTime.Now - _updateQueueTimestamp;
+                    if (ts.TotalMilliseconds > 255)
+                    {
+                        _updateQueued = false;
+                        _updateQueueTimestamp = DateTime.MinValue;
+
+                        uxUpdateBackgroundWorker.RunWorkerAsync();
+                    }
+                }
+            }
+
+        }
+
+        private void uxUpdateBackgroundWorker_DoWork(object sender, DoWorkEventArgs e)
+        {
+            update();
+        }
+
+
+        private void uxMainDataGridView_Sorted(object sender, EventArgs e)
+        {
+            queueUpdate();
+        }
+
+ 
+
